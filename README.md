@@ -15,7 +15,7 @@ If no command line string, the MT-32 screen is reset to normal display.
 - A Roland MT-32, equivalent or emulator (mt32emu_qt/MUNT, etc).
 
 ### How to get
-- Download [MT32MSG.COM](releases) from Releases.
+- Download [MT32MSG.COM](https://github.com/640-KB/MT32MSG/releases) from Releases.
 
 ### How to build from source
 - Use MASM 5.x or 6.x to produce `MT32MSG.COM`:
