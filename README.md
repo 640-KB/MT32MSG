@@ -11,7 +11,7 @@ If no command line string, the MT-32 screen is reset to normal display.
 
 ### Requirements
 - A PC running DOS (real mode) or emulator that includes MPU-401 support (DOSBox, 86Box).
-- An MPU-401/UART mode compatible MIDI interface running in UART mode (Roland MPU, [Sound Blaster 16 or later](https://en.wikipedia.org/wiki/Sound_Blaster#Third_generation_Sound_Blasters,_16-bit_ISA_cards) or most 16-bit ISA sound interfaces with MIDI port) at I/O port 330h.
+- An MPU-401/UART mode compatible MIDI interface (Roland MPU, [Sound Blaster 16 or later](https://en.wikipedia.org/wiki/Sound_Blaster#Third_generation_Sound_Blasters,_16-bit_ISA_cards) or most 16-bit ISA sound interfaces with MIDI port) at I/O port 330h.
 - A Roland MT-32, equivalent or emulator (mt32emu_qt/MUNT, etc).
 
 ### How to get
