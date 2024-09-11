@@ -38,6 +38,7 @@
 ;
 MPU_BASE_PORT	EQU	330H		; MPU I/O port - 330h or 300h
 SYSEX_DELAY		EQU	18		; delay between bytes in ms (0 to disable)
+ASCII_FILTER	EQU	1		; allow only ASCII 32-127
 
 ;----------------------------------------------------------------------------;
 ; MIDI SYSEX
@@ -91,11 +92,24 @@ MPU_SR	RECORD	DSR:1, DRR:1, MPUX:6
 ;----------------------------------------------------------------------------;
 ; MAX val: REG, VAL
 ;----------------------------------------------------------------------------;
-MAX		MACRO		REG, VAL
-		LOCAL		EXIT
-	CMP	REG, VAL			; max value is MAXVAL
-	JBE	EXIT				; jump if <= MAXVAL
-	MOV	REG, VAL			; if longer, truncate to MAXVAL
+MAX		MACRO	REG, VAL
+		LOCAL	EXIT
+	CMP	REG, VAL			; max value is VAL
+	JBE	EXIT				; jump if <= VAL
+	MOV	REG, VAL			; if longer, use VAL
+EXIT:
+		ENDM
+
+;----------------------------------------------------------------------------;
+; Filter ASCII chars to allow only 32-127
+;----------------------------------------------------------------------------;
+ASC_FILTER	MACRO	REG
+		LOCAL	BAD, EXIT
+	TEST	REG, 11100000B		; valid if SF = 0 and ZF = 0
+	JS	BAD				; jump if ASCII > 127
+	JNZ	EXIT				; jump if ASCII >= 32
+BAD:
+	MOV	REG, ' '			; replace with space
 EXIT:
 		ENDM
 
@@ -137,7 +151,7 @@ SYSEX 	DB	SYSEX_BEGIN		; sysex begin marker
 SXDAT		DB	CMD_DISP		; write to display command
 		DW	DISP_CLR 		; default to reset display function
 SYXSTR	DB	20 DUP(' ') 	; 20 chars of data (space padded)
-LSXDAT	EQU	$-SXDAT 		; length of display data (always 23)
+LSXDAT	EQU	$-SXDAT 		; length of checksummed data (always 23)
 CHKSUM	DB	?			; checksum
 		DB	SYSEX_END		; sysex EOI (End of Exclusive)
 LSYSEX 	EQU	$-SYSEX 		; length of sysex (always 30)
@@ -154,25 +168,40 @@ LSYSEX 	EQU	$-SYSEX 		; length of sysex (always 30)
 ; Output:
 ;	DS:[SI] = SYSEX string
 ;	CX = new data length
+; Clobbers: AH
 ;----------------------------------------------------------------------------;
 STR_TO_SYSEX PROC
 	MAX	CX, <LENGTH SYXSTR>	; max length of string is 20 bytes
-SYSEX_HEADER:
 	MOV	DI, OFFSET SXDAT		; output to data offset of sysex
 	PUSH	DI				; save beginning of data
-	INC	DI				; skip base address
-	JCXZ	DO_CHECKSUM			; if CX=0, reset display and don't copy data
-	XOR	AX, AX			; otherwise, use display cmd (DISP_OUT=0)
-	STOSW					; write to command/address bytes in buffer
-	REP	MOVSB				; copy input data string to output buffer
-DO_CHECKSUM:
-	MOV	CX, LSXDAT			; length of data to checksum (always 23)
-	POP	SI				; SI = beginning of data for checksum
-	CALL	CHECKSUM			; AL = checksum remainder of sysex data
-	MOV	DI, OFFSET CHKSUM		; DI = checksum byte pointer
-	STOSB					; write checksum remainder to sysex data
+	XOR	AX, AX			; DISP_OUT=0 if display, AH = zero checksum
+	JCXZ	CHECKSUM			; if CX=0, reset display and don't copy data
+	INC	DI				; DI = display function address
+	STOSW					; replace command/address bytes in sysex
+			IF ASCII_FILTER EQ 1
+;----------------------------------------------------------------------------;
+; Only ASCII chars 32-127 allowed. Replace invalid chars with spaces.
+;
+FILTER_LOOP:
+	LODSB					; load input char
+	ASC_FILTER	AL			; replace invalid chars with space
+	STOSB					; write to output buffer
+	LOOP	FILTER_LOOP
+			ELSE
+	REP	MOVSB				; copy input string to output sysex buffer
+			ENDIF
+CHECKSUM:					; calculate Roland checksum
+	POP	SI				; SI = beginning of data to checksum
+	MOV	CL, LSXDAT			; length of data to checksum (always 23)
+SUM_LOOP:
+	LODSB 				; AL = next byte
+	ADD	AH, AL 			; add to byte sum
+	LOOP	SUM_LOOP
+	NEG	AH 				; two's complement the sum
+	AND	AH, 07FH 			; mask off high bit ( mod 128 )
+	MOV	[SI], AH			; write checksum remainder to sysex data
 	MOV	SI, OFFSET SYSEX		; SI = beginning of sysex buffer
-	MOV	CX, LSYSEX			; length of sysex data (always 30)
+	MOV	CL, LSYSEX			; length of sysex data (always 30)
 STR_TO_SYSEX ENDP
 MT32_EXIT:
 	RET
@@ -191,42 +220,20 @@ MPU_UART	PROC
 ;----------------------------------------------------------------------------;
 WRITE_MPU	PROC
 	CLI					; no interrupts while writing
-WRITE_MPU_LOOP:
 	CALL	MPU_READY			; wait for DRR
 	JNZ	WRITE_MPU_RET		; exit if DRR timeout
 	LODSB					; load next byte
 	OUT	DX, AL			; write to DATA port
+	STI					; restore interrupts
 			IF SYSEX_DELAY GT 0
 	MOV	AX, SYSEX_DELAY		; delay for SYSEX
 	CALL	IO_DELAY_MS			; AL * ms delay
 			ENDIF
-	LOOP	WRITE_MPU_LOOP		; loop through string
+	LOOP	WRITE_MPU			; loop through string
 WRITE_MPU_RET:
 	STI					; restore interrupts
 	RET
 WRITE_MPU	ENDP
-
-;----------------------------------------------------------------------------;
-; CHECKSUM: Generate Roland checksum
-;----------------------------------------------------------------------------;
-; Input:
-;	DS:[SI] = SYSEX string
-;	CX = SYSEX length
-; Output:
-;	AL = checksum byte
-; Clobbers: AH
-;----------------------------------------------------------------------------;
-CHECKSUM	PROC
-	XOR	AX, AX			; clear running sum
-SUM_LOOP:
-	LODSB 				; load next byte
-	ADD	AH, AL 			; add to byte sum
-	LOOP	SUM_LOOP
-	MOV	AL, AH 			; AL = sum
-	NEG	AL 				; two's complement the sum
-	AND	AL, 07FH 			; mask off high bit ( mod 128 )
-	RET
-CHECKSUM	ENDP
 
 ;----------------------------------------------------------------------------;
 ; MPU_RESET: Reset MPU, set to default mode
@@ -278,7 +285,7 @@ MPU_RESET	ENDP
 ; Output:
 ;	NZ if error
 ;	ZF if no error
-; Clobbers: AL
+;	AL = 0, if no error
 ;----------------------------------------------------------------------------;
 MPU_RESET_UART	PROC
 	CALL	MPU_RESET			; reset MPU
@@ -331,7 +338,7 @@ MPU_READY	PROC
 ;	ZF = 0 if bit not set (timeout)
 ;----------------------------------------------------------------------------;
 MPU_POLL	PROC
-	PUSH	CX				; preserve registers
+	PUSH	CX				; preserve caller registers
 	PUSH	DX
 	INC	DX				; DX = STATUS/COMMAND port
 	XOR	CX, CX			; timeout 64K loops
@@ -361,6 +368,7 @@ MPU_UART	ENDP
 ;
 ; Input:
 ;	AX = wait in number of ms (clobbered)
+; Clobbers: BX, DI
 ;
 ; Based on contribution by @Raffzahn (under CC BY-SA 4.0):
 ; https://retrocomputing.stackexchange.com/a/24874/21323
@@ -371,40 +379,36 @@ MPU_UART	ENDP
 PIT_CH0	EQU		40H		; Timer Channel/Counter 0
 PIT_CTRL	EQU		43H		; Timer Control Word
 IO_DELAY_MS	PROC
-	PUSH	BX
-	MOV	BX, 1193 * 2		; 1,193,180 / 1000 ms * 2 = 2,386 ticks/ms
-IO_DELAY_TICK PROC
-	XCHG	AX, BX			; BX = wait ms
-	PUSH	CX
 	PUSH	DX
+	MOV	BX, 1193 * 2		; 1,193,180 / 1000 ms * 2 = 2,386 ticks/ms
 	MUL	BX				; DX:AX = countdown of PIT ticks to wait
 	XCHG	AX, BX			; DX:BX = countdown ticks
 	CALL	IO_WAIT_LATCH		; AX = start read
-	MOV	CX, AX			; CX = last read
+	MOV	DI, AX			; DI = last read
 IO_WAIT_MS_LOOP:
 	CALL	IO_WAIT_LATCH		; AX = current counter reading
-	SUB	CX, AX			; CX = # of ticks elapsed since last reading
-	SUB	BX, CX			; subtract change in ticks from countdown
-	MOV	CX, AX			; CX = save the last read
+	SUB	DI, AX			; DI = # of ticks elapsed since last reading
+	SUB	BX, DI			; subtract change in ticks from countdown
+	MOV	DI, AX			; DI = save the last read
 	SBB	DX, 0				; borrow out of high word (if necessary)
 	JAE	IO_WAIT_MS_LOOP		; loop while countdown >= 0
 	POP	DX
-	POP	CX
-	POP	BX
-IO_WAIT_MS_DONE:
 	RET
-IO_WAIT_LATCH:
+
+;----------------------------------------------------------------------------;
+; Latch PIT 0 and read counter to AX
+;----------------------------------------------------------------------------;
+IO_WAIT_LATCH PROC
 	MOV	AL, 0				; Counter 0, Latch (00b)
-	PUSHF					; save current IF
 	CLI					; disable interrupts
 	OUT	PIT_CTRL, AL		; Write command to CTC
 	IN	AL, PIT_CH0			; Read low byte of Counter 0 latch
 	MOV	AH, AL			; Save it
 	IN	AL, PIT_CH0			; Read high byte of Counter 0 latch
-	POPF					; restore IF state
+	STI					; restore interrupts
 	XCHG	AL, AH			; convert endian
 	RET
-IO_DELAY_TICK ENDP
+IO_WAIT_LATCH ENDP
 IO_DELAY_MS ENDP
 			ENDIF
 
