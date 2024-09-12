@@ -104,12 +104,10 @@ EXIT:
 ; Filter ASCII chars to allow only 32-127
 ;----------------------------------------------------------------------------;
 ASC_FILTER	MACRO	REG
-		LOCAL	BAD, EXIT
-	TEST	REG, 11100000B		; valid if SF = 0 and ZF = 0
-	JS	BAD				; jump if ASCII > 127
-	JNZ	EXIT				; jump if ASCII >= 32
-BAD:
-	MOV	REG, ' '			; replace with space
+		LOCAL	EXIT
+	CMP	REG, ' '			; is ASCII >= 32 and ASCII <= 127?
+	JG	EXIT				; valid if so
+	MOV	REG, ' '			; if not, replace with space
 EXIT:
 		ENDM
 
@@ -136,9 +134,9 @@ MT32		PROC	NEAR
 	JCXZ	START_DISP			; jump if input length is 0 (no input)
 	DEC	CX				; remove leading character from length
 START_DISP:
-	CALL	STR_TO_SYSEX		; convert input string DS:[SI] to sysex data
 	CALL	MPU_RESET_UART		; reset and put in UART mode and ready
 	JNZ	MT32_EXIT			; exit if reset failed or ready timeout
+	CALL	STR_TO_SYSEX		; convert input string DS:[SI] to sysex data
 	CALL	WRITE_MPU			; write [SI] (length CX) to MPU-401
 	JMP	SHORT MPU_RESET		; reset MPU interface and return to DOS
 
@@ -224,7 +222,7 @@ WRITE_MPU	PROC
 	JNZ	WRITE_MPU_RET		; exit if DRR timeout
 	LODSB					; load next byte
 	OUT	DX, AL			; write to DATA port
-	STI					; restore interrupts
+	STI					; allow interrupts between bytes
 			IF SYSEX_DELAY GT 0
 	MOV	AX, SYSEX_DELAY		; delay for SYSEX
 	CALL	IO_DELAY_MS			; AL * ms delay
@@ -319,13 +317,13 @@ MPU_STATUS	PROC
 ; Input:
 ;	DX = MPU base (DATA) port
 ; Output:
-;	ZF = 1 if not ready
-;	ZF = 0 if ready
+;	ZF = 1 if ready (okay to read/write)
+;	ZF = 0 if not ready or timeout
 ;	DX = status port
 ; Clobbers: AX
 ;----------------------------------------------------------------------------;
 MPU_READY	PROC
-	MOV	AH,  MASK DRR		; Data Receive Ready: 40h (bit 6)
+	MOV	AH, MASK DRR		; Data Receive Ready: 40h (bit 6)
 
 ;----------------------------------------------------------------------------;
 ; MPU_POLL: Check STATUS bits with timeout
@@ -334,8 +332,9 @@ MPU_READY	PROC
 ;	DX = MPU base (DATA) port
 ;	AH = status bit to poll
 ; Output:
-;	ZF = 1 if bit set
-;	ZF = 0 if bit not set (timeout)
+;	ZF = 1 if bit is clear (okay to read/write)
+;	ZF = 0 if bit is set (timeout)
+; Clobbers: AX
 ;----------------------------------------------------------------------------;
 MPU_POLL	PROC
 	PUSH	CX				; preserve caller registers
@@ -367,29 +366,25 @@ MPU_UART	ENDP
 ; effective frequency of the counter is actually 2,386,360 Hz.
 ;
 ; Input:
-;	AX = wait in number of ms (clobbered)
-; Clobbers: BX, DI
+;	AX = wait in number of ms
+; Clobbers: AX, BX, DI
 ;
 ; Based on contribution by @Raffzahn (under CC BY-SA 4.0):
 ; https://retrocomputing.stackexchange.com/a/24874/21323
 ;
 ; https://stanislavs.org/helppc/8253.html
 ;----------------------------------------------------------------------------;
-; 8253 PIT Timer
-PIT_CH0	EQU		40H		; Timer Channel/Counter 0
-PIT_CTRL	EQU		43H		; Timer Control Word
 IO_DELAY_MS	PROC
 	PUSH	DX
 	MOV	BX, 1193 * 2		; 1,193,180 / 1000 ms * 2 = 2,386 ticks/ms
 	MUL	BX				; DX:AX = countdown of PIT ticks to wait
 	XCHG	AX, BX			; DX:BX = countdown ticks
 	CALL	IO_WAIT_LATCH		; AX = start read
-	MOV	DI, AX			; DI = last read
 IO_WAIT_MS_LOOP:
+	MOV	DI, AX			; DI = last read
 	CALL	IO_WAIT_LATCH		; AX = current counter reading
 	SUB	DI, AX			; DI = # of ticks elapsed since last reading
 	SUB	BX, DI			; subtract change in ticks from countdown
-	MOV	DI, AX			; DI = save the last read
 	SBB	DX, 0				; borrow out of high word (if necessary)
 	JAE	IO_WAIT_MS_LOOP		; loop while countdown >= 0
 	POP	DX
@@ -398,6 +393,9 @@ IO_WAIT_MS_LOOP:
 ;----------------------------------------------------------------------------;
 ; Latch PIT 0 and read counter to AX
 ;----------------------------------------------------------------------------;
+PIT_CH0	EQU		40H		; 8253 PIT Channel/Counter 0 port
+PIT_CTRL	EQU		43H		; 8253 PIT Control Word port
+
 IO_WAIT_LATCH PROC
 	MOV	AL, 0				; Counter 0, Latch (00b)
 	CLI					; disable interrupts
