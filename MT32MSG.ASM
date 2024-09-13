@@ -412,3 +412,20 @@ IO_DELAY_MS ENDP
 
 _TEXT	ENDS
 END START
+
+----------------------------------------------------------------------------
+Text Auto-Formatting:
+
+----------------------------------------------------------------------------
+Sublime Text syntax:
+{
+ 	"tab_completion": false,
+	"auto_complete": false,
+	"tab_size": 6,
+}
+
+----------------------------------------------------------------------------
+Modeline magic for various editors
+
+/* vim: set tabstop=6:softtabstop=6:shiftwidth=6:noexpandtab */
+# sublime: tab_completion false; auto_complete false; tab_size 6
